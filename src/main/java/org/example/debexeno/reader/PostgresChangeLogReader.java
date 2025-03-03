@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
 import lombok.Value;
@@ -137,19 +138,58 @@ public class PostgresChangeLogReader {
     if (!trackedTables.isEmpty() && !trackedTables.contains(schema + "." + table)) {
       return null;
     }
+    /* Sample data
+    {
+      "action": "I",
+      "schema": "public",
+      "table": "test_table",
+      "columns": [
+        { "name": "id", "type": "integer", "value": 126 },
+        { "name": "name", "type": "text", "value": "X" }
+      ]
+    }
+    */
+    // Get column values
     Map<String, Object> columnValues = new HashMap<>();
-
     if (changeData.has("columns")) {
       JSONArray columns = changeData.getJSONArray("columns");
       for (int i = 0; i < columns.length(); i++) {
         JSONObject column = columns.getJSONObject(i);
         String columnName = column.getString("name");
-        Object value = column.opt("value");
+        Object value = column.opt("value"); // OPT: return null if not found
         columnValues.put(columnName, value);
       }
     }
+    /*
+    {
+    "action": "U",
+    "schema": "public",
+    "table": "test_table",
+    "columns": [
+      { "name": "id", "type": "integer", "value": 70 },
+      { "name": "name", "type": "text", "value": "SGP" }
+    ],
+    "identity": [
+      { "name": "id", "type": "integer", "value": 70 },
+      { "name": "name", "type": "text", "value": "HKA" }
+     ]
+    }
+     */
+    // Get old column values for updates or deletes
+    Optional<Map<String, Object>> oldColumnValues = Optional.empty();
+    if ((type == Type.UPDATE || type == Type.DELETE) && changeData.has("identity")) {
+      JSONArray columns = changeData.getJSONArray("identity");
+      Map<String, Object> columnValue = new HashMap<>();
+      for (int i = 0; i < columns.length(); i++) {
+        JSONObject column = columns.getJSONObject(i);
+        String columnName = column.getString("name");
+        Object value = column.opt("value");
+        columnValue.put(columnName, value);
+      }
+      oldColumnValues = Optional.of(columnValue);
+    }
 
-    return new ChangeEvent(xid, type, schema, table, columnValues, Instant.now());
+    return new ChangeEvent(xid, type, schema, table, columnValues, Instant.now(), oldColumnValues);
 
 
   }
