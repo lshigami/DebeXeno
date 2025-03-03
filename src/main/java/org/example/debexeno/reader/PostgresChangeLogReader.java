@@ -200,7 +200,6 @@ public class PostgresChangeLogReader {
         String jsonData = rs.getString("data");
         Type type = null;
         ChangeEvent event;
-        lastLsn = lsn;
 
         JSONObject changeData = new JSONObject(jsonData);
         String action = changeData.getString("action");
@@ -211,7 +210,6 @@ public class PostgresChangeLogReader {
             break;
           case "C":
             logger.info("Commit transaction with LSN: {}", lsn);
-            changes.clear();
             break;
           case "I":
             type = Type.INSERT;
