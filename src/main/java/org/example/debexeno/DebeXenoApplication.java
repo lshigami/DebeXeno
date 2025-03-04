@@ -12,7 +12,13 @@ public class DebeXenoApplication {
     ApplicationContext context = SpringApplication.run(DebeXenoApplication.class, args);
 
     CaptureService captureService = context.getBean(CaptureService.class);
-    captureService.captureChanges();
+    // Start the capture service
+    captureService.startCapture();
+
+    // Register shutdown hook to gracefully shut down the service.
+    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+      captureService.stopCapture();
+    }));
   }
 
 
