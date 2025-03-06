@@ -10,6 +10,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.example.debexeno.config.DatabaseConfig;
+import org.example.debexeno.coordination.DistributedCoordinationService;
 import org.example.debexeno.error.ErrorHandler;
 import org.example.debexeno.kafka.KafkaChangeEventProducer;
 import org.example.debexeno.offset.OffsetManager;
@@ -52,23 +53,52 @@ public class CaptureService {
   @Autowired
   private ErrorHandler errorHandler;
 
+  @Autowired
+  private DistributedCoordinationService coordinationService;
+
+  @Value("${capture.leader.path:/leader/capture-service}")
+  private String leaderPath;
+
+  @Value("${capture.distributed.enabled:true}")
+  private boolean distributedEnabled;
+
   /**
    * Initialize capturing in a separate thread. Create a new thread to capture changes
    */
   public void startCapture(Set<String> trackedTables) {
     if (running.compareAndSet(false, true)) {
+      logger.info("Starting capture service with instance ID: {}",
+          coordinationService.getInstanceId());
+      if (distributedEnabled) {
+        logger.info("Starting leader election for capture service");
 
-      scheduledExecutor = Executors.newScheduledThreadPool(1);
-      // Start a scheduled executor to check for schema changes
-      scheduledExecutor.scheduleAtFixedRate(() -> checkSchemaChanges(trackedTables),
-          schemaCheckIntervalMinutes, schemaCheckIntervalMinutes, TimeUnit.MINUTES);
+        coordinationService.startLeaderElection(leaderPath,
+            () -> startCaptureProcessing(trackedTables));
 
-      executorService = Executors.newSingleThreadExecutor();
-      executorService.submit(() -> captureChanges(trackedTables));
-      logger.info("Change capture service started");
+      } else {
+        logger.info("Distributed mode is disabled, starting capture processing directly");
+        startCaptureProcessing(trackedTables);
+      }
+
     } else {
       logger.warn("Change capture service is already running");
     }
+  }
+
+  public void startCaptureProcessing(Set<String> trackedTables) {
+    logger.info("Start capture processing...");
+    scheduledExecutor = Executors.newScheduledThreadPool(1);
+    // Start a scheduled executor to check for schema changes
+    scheduledExecutor.scheduleAtFixedRate(() -> {
+      // Only check schema changes if not distributed or if this instance is the leader
+      if (!distributedEnabled || coordinationService.isLeader()) {
+        checkSchemaChanges(trackedTables);
+      }
+    }, schemaCheckIntervalMinutes, schemaCheckIntervalMinutes, TimeUnit.MINUTES);
+
+    executorService = Executors.newSingleThreadExecutor();
+    executorService.submit(() -> captureChanges(trackedTables));
+    logger.info("Change capture service started");
   }
 
   /**
@@ -76,7 +106,18 @@ public class CaptureService {
    */
   public void stopCapture() {
     if (running.compareAndSet(true, false)) {
-      executorService.shutdown();
+      if (executorService != null) {
+        executorService.shutdown();
+      }
+
+      if (scheduledExecutor != null) {
+        scheduledExecutor.shutdown();
+      }
+
+      if (distributedEnabled) {
+        coordinationService.stopLeaderElection();
+      }
+
       logger.info("Change capture service stopped");
     }
   }
