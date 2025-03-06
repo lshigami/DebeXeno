@@ -1,6 +1,7 @@
 package org.example.debexeno.service;
 
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -9,6 +10,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.example.debexeno.component.KafkaChangeEventProducer;
 import org.example.debexeno.config.DatabaseConfig;
+import org.example.debexeno.offset.OffsetManager;
 import org.example.debexeno.reader.ChangeEvent;
 import org.example.debexeno.reader.PostgresChangeLogReader;
 import org.slf4j.Logger;
@@ -32,6 +34,9 @@ public class CaptureService {
 
   @Autowired
   private KafkaChangeEventProducer kafkaProducer;
+
+  @Autowired
+  private OffsetManager offsetManager;
 
   /**
    * Initialize capturing in a separate thread. Create a new thread to capture changes
@@ -69,18 +74,46 @@ public class CaptureService {
         databaseConfig.getUsername(), databaseConfig.getPassword(), databaseConfig.getSlotName(),
         trackedTables);
 
+    // Get the last processed LSN from the offset manager
+    String lastLsn = offsetManager.getOffset(databaseConfig.getSlotName());
+    logger.info("Starting capture from LSN: {}", lastLsn != null ? lastLsn : "beginning");
+
     try {
       reader.connect();
-
+      reader.setLastLsn(lastLsn);
       // Read changes continuously
       while (running.get()) {
         List<ChangeEvent> changes = reader.readChanges(100);
 
-        for (ChangeEvent change : changes) {
-          logger.info(change.toString());
+        // Get the current LSN after reading
+        String currentLsn = reader.getLastLsn();
 
-          // Process changes here
-          kafkaProducer.sendChangeEvent(change);
+        // Filter out changes that have already been processed based on the offset
+        List<ChangeEvent> newChanges = fillterOut(changes, lastLsn, reader);
+
+        //TODO: Transform the changes to a format that can be sent to Kafka
+
+        boolean allChangesSuccess = true;
+        for (ChangeEvent change : newChanges) {
+
+          try {
+            kafkaProducer.sendChangeEvent(change);
+          } catch (Exception e) {
+            allChangesSuccess = false;
+            logger.error("Failed to process change: {}", change, e);
+            //TODO: Implement error handling like Dead Letter Queue
+          }
+        }
+
+        if (allChangesSuccess) {
+          // Update the offset with the last processed LSN
+          offsetManager.updateOffset(databaseConfig.getSlotName(), currentLsn);
+          logger.info("Updated offset to LSN: {}", currentLsn);
+
+          // Then consume changes up to the current LSN
+          reader.consumeChanges(currentLsn);
+          logger.info("Consumed changes up to LSN: {}", currentLsn);
+
         }
 
         // Sleep for a bit to avoid hammering the database
@@ -99,5 +132,23 @@ public class CaptureService {
     } finally {
       reader.close();
     }
+  }
+
+  public List<ChangeEvent> fillterOut(List<ChangeEvent> changes, String lastLsn,
+      PostgresChangeLogReader reader) {
+    ArrayList<ChangeEvent> newChanges = new ArrayList<>();
+    if (!changes.isEmpty()) {
+      for (ChangeEvent change : changes) {
+        // Compare the LSN of each change with the last processed LSN
+        String changeLsn = change.getLsn();
+        if (lastLsn == null || (changeLsn != null && reader.compareLsn(changeLsn, lastLsn) > 0)) {
+          newChanges.add(change);
+        }
+      }
+
+      logger.debug("Filtered {} changes, {} are new since last processed LSN: {}", changes.size(),
+          newChanges.size(), lastLsn);
+    }
+    return newChanges;
   }
 }

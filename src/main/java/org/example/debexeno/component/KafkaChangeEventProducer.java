@@ -139,7 +139,7 @@ public class KafkaChangeEventProducer {
     String key = event.getType().toString() + ":" + event.getSchema() + ":" + event.getTable();
     String value = serializeChangeEvent(event);
     ProducerRecord<String, String> message = new ProducerRecord<>(topicName, key, value);
-    logger.info("Sending message to Kafka topic {}", topicName);
+    logger.debug("Sending message to Kafka topic {}", topicName);
     producer.send(message, (metadata, exception) -> {
       if (exception != null) {
         logger.error("Failed to send message to topic {}", topicName, exception);

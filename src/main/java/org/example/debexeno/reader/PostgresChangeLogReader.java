@@ -13,7 +13,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
-import lombok.Value;
+import lombok.Getter;
+import lombok.Setter;
 import lombok.experimental.NonFinal;
 import org.example.debexeno.ultilizes.Type;
 import org.json.JSONArray;
@@ -21,8 +22,8 @@ import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-
-@Value
+@Getter
+@Setter
 public class PostgresChangeLogReader {
 
   private static final Logger logger = LoggerFactory.getLogger(PostgresChangeLogReader.class);
@@ -52,7 +53,8 @@ public class PostgresChangeLogReader {
   }
 
   /**
-   * Ensures replication slot already exists, else create a new one
+   * Ensures replication slot already exists, else create a new one using wal2json plugin Plugin
+   * wal2json is required to convert WAL to JSON format
    *
    * @throws SQLException
    */
@@ -69,6 +71,44 @@ public class PostgresChangeLogReader {
         logger.info("Replication slot '{}' already exists", slotName);
       }
     }
+  }
+
+  /**
+   * Helper function to compare two LSNs
+   *
+   * @param lsn
+   * @param lastProcessedLsn
+   * @return 0 if equal, -1 if lsn is less than lastProcessedLsn, 1 if lsn is greater than
+   */
+  public int compareLsn(String lsn, String lastProcessedLsn) {
+    if (lsn == null && lastProcessedLsn == null) {
+      return 0;
+    }
+    if (lsn == null) {
+      return -1;
+    }
+    if (lastProcessedLsn == null) {
+      return 1;
+    }
+    String[] lsnParts = lsn.split("/");
+    String[] lastProcessedLsnParts = lastProcessedLsn.split("/");
+
+    // Check if LSN has 2 parts
+    if (lsnParts.length != 2 || lastProcessedLsnParts.length != 2) {
+      logger.warn("Lsn does not match lastProcessedLsn parts");
+      return lsn.compareTo(lastProcessedLsn);
+    }
+
+    // Compare first part
+    long firstLsn = Long.parseLong(lsnParts[0], 16); // Hex to long
+    long firstLastProcessedLsn = Long.parseLong(lastProcessedLsnParts[0], 16);
+    if (firstLsn != firstLastProcessedLsn) {
+      return Long.compare(firstLsn, firstLastProcessedLsn);
+    }
+    // Compare second part
+    long secondLsn = Long.parseLong(lsnParts[1], 16);
+    long secondLastProcessedLsn = Long.parseLong(lastProcessedLsnParts[1], 16);
+    return Long.compare(secondLsn, secondLastProcessedLsn);
   }
 
   /**
@@ -101,22 +141,33 @@ public class PostgresChangeLogReader {
   }
 
   /**
-   * Create SQL statement to get replication logs
+   * Create SQL statement to get replication logs limited by LSN, "without consuming them"
+   * Peek_changes is used to get the changes without consuming them
    *
    * @param slotName
-   * @param lastLsn
-   * @param maxChanges
-   * @return A query to get replication logs
+   * @param limit
+   * @return A query to get replication logs using peek_changes
    */
-  String replicationLogsGetChanges(String slotName, String lastLsn, int maxChanges) {
-    if (lastLsn == null) {
-      return String.format(
-          "SELECT * FROM pg_logical_slot_get_changes('%s', NULL, %d, 'format-version', '2')",
-          slotName, maxChanges);
+  String replicationLogsPeekChanges(String slotName, int limit) {
+    return String.format(
+        "SELECT * FROM pg_logical_slot_peek_changes('%s', NULL, %d, 'format-version', '2')",
+        slotName, limit);
+  }
+
+  /**
+   * Create SQL statement to consume replication logs up to a given LSN
+   *
+   * @param slotName Replication slot name
+   * @param uptoLsn  Last log sequence number to consume
+   * @return A query to consume replication logs
+   */
+  String replicationLogsConsumeChanges(String slotName, String uptoLsn) {
+    if (uptoLsn == null) {
+      return null;
     }
     return String.format(
-        "SELECT * FROM pg_logical_slot_get_changes('%s', '%s', %d, 'format-version', '2')",
-        slotName, lastLsn, maxChanges);
+        "SELECT * FROM pg_logical_slot_get_changes('%s', '%s', NULL, 'format-version', '2')",
+        slotName, uptoLsn);
   }
 
   /**
@@ -127,7 +178,7 @@ public class PostgresChangeLogReader {
    * @param type
    * @return ChangeEvent object parsed from the JSON, or null if the table is not tracked
    */
-  public ChangeEvent parseChangeData(JSONObject changeData, String xid, Type type) {
+  public ChangeEvent parseChangeData(JSONObject changeData, String xid, Type type, String lsn) {
     if (!changeData.has("schema") || !changeData.has("table")) {
       return null;
     }
@@ -189,13 +240,14 @@ public class PostgresChangeLogReader {
       oldColumnValues = Optional.of(columnValue);
     }
 
-    return new ChangeEvent(xid, type, schema, table, columnValues, Instant.now(), oldColumnValues);
+    return new ChangeEvent(xid, type, schema, table, columnValues, Instant.now(), oldColumnValues,
+        lsn);
 
 
   }
 
   /**
-   * Reads changes from the WAL using the configured replication slot
+   * Reads changes from the WAL using the configured replication slot without consuming them
    *
    * @param limit Maximum number of changes to read
    * @return List of ChangeEvent objects representing the changes
@@ -208,12 +260,13 @@ public class PostgresChangeLogReader {
 
     List<ChangeEvent> changes = new ArrayList<>();
     logger.info("Reading changes from LSN: {}", lastLsn);
+    String lastProcessedLsn = null;
 
     try (Statement stmt = connection.createStatement()) {
+      logger.info("Peeking at changes from replication slot");
+      String query = replicationLogsPeekChanges(slotName, limit);
 
-      String query = replicationLogsGetChanges(slotName, lastLsn, limit);
       ResultSet rs = stmt.executeQuery(query);
-
       while (rs.next()) {
         // After the query, output is look like
         /*
@@ -238,49 +291,95 @@ public class PostgresChangeLogReader {
         String lsn = rs.getString("lsn");
         String xid = rs.getString("xid");
         String jsonData = rs.getString("data");
-        Type type = null;
-        ChangeEvent event;
 
-        JSONObject changeData = new JSONObject(jsonData);
-        String action = changeData.getString("action");
-        // Handle different actions (B = Begin, C = Commit, I = Insert, U = Update, D = Delete)
-        switch (action) {
-          case "B":
-            logger.info("Start transaction with LSN: {}", lsn);
-            break;
-          case "C":
-            logger.info("Commit transaction with LSN: {}", lsn);
-            break;
-          case "I":
-            type = Type.INSERT;
-            event = parseChangeData(changeData, xid, type);
-            if (event != null) {
-              changes.add(event);
-            }
-            break;
-          case "U":
-            type = Type.UPDATE;
-            event = parseChangeData(changeData, xid, type);
-            if (event != null) {
-              changes.add(event);
-            }
-            break;
-          case "D":
-            type = Type.DELETE;
-            event = parseChangeData(changeData, xid, type);
-            if (event != null) {
-              changes.add(event);
-            }
-            break;
-          default:
-            logger.warn("Unknown action type: {}", action);
+        if (compareLsn(lsn, lastProcessedLsn) > 0) {
+          lastProcessedLsn = lsn;
         }
 
+        try {
+          Type type = null;
+          ChangeEvent event = null;
+
+          JSONObject changeData = new JSONObject(jsonData);
+          String action = changeData.getString("action");
+          // Handle different actions (B = Begin, C = Commit, I = Insert, U = Update, D = Delete)
+          switch (action) {
+            case "B":
+              logger.info("Start transaction with LSN: {}", lsn);
+              break;
+            case "C":
+              logger.info("Commit transaction with LSN: {}", lsn);
+              break;
+            case "I":
+              type = Type.INSERT;
+              event = parseChangeData(changeData, xid, type, lsn);
+              if (event != null) {
+                changes.add(event);
+              }
+              break;
+            case "U":
+              type = Type.UPDATE;
+              event = parseChangeData(changeData, xid, type, lsn);
+              if (event != null) {
+                changes.add(event);
+              }
+              break;
+            case "D":
+              type = Type.DELETE;
+              event = parseChangeData(changeData, xid, type, lsn);
+              if (event != null) {
+                changes.add(event);
+              }
+              break;
+            default:
+              logger.warn("Unknown action type: {}", action);
+          }
+        } catch (Exception e) {
+          logger.error("Error parsing JSON data", e);
+        }
+
+        if (lastProcessedLsn != null) {
+          this.lastLsn = lastProcessedLsn;
+        }
       }
 
     }
-    logger.info("Read {} changes", changes.size());
+    logger.info("Read {} changes, last LSN: {}", changes.size(), this.lastLsn);
     return changes;
   }
+
+  /**
+   * Consumes changes from the replication slot up to the specified LSN. This should be called after
+   * successfully processing the changes
+   *
+   * @param uptoLsn Last log sequence number to consume
+   * @throws SQLException
+   */
+  public void consumeChanges(String uptoLsn) throws SQLException {
+    if (uptoLsn == null) {
+      logger.debug("No LSN provided to consume changes");
+      return;
+    }
+    if (connection == null || connection.isClosed()) {
+      connect();
+    }
+    logger.info("Consuming changes up to LSN: {}", uptoLsn);
+
+    try (Statement stmt = connection.createStatement()) {
+      String query = replicationLogsConsumeChanges(slotName, uptoLsn);
+      try {
+        if (query != null) {
+          ResultSet rs = stmt.executeQuery(query);
+          int count = rs.getRow();
+          logger.info("Consumed {} changes up to LSN: {}", count, uptoLsn);
+        }
+      } catch (SQLException e) {
+        logger.error("Error consuming changes up to LSN {}: {}", uptoLsn, e.getMessage(), e);
+      }
+
+    }
+
+  }
+
 
 }

@@ -21,12 +21,13 @@ public class ChangeEvent {
   String table; // table name
   Map<String, Object> columnValues; //new column values
   Instant timestamp; // timestamp of the change
+  String lsn; // log sequence number
   /*
    * Set  REPLICA IDENTITY FULL on the table to get old values
    */ Optional<Map<String, Object>> oldData; // old column values when type is UPDATE or DELETE
 
   ChangeEvent(String txId, Type type, String schema, String table, Map<String, Object> columnValues,
-      Instant timestamp, Optional<Map<String, Object>> oldData) {
+      Instant timestamp, Optional<Map<String, Object>> oldData, String lsn) {
     this.txId = txId;
     this.type = type;
     this.schema = schema;
@@ -34,6 +35,7 @@ public class ChangeEvent {
     this.columnValues = columnValues;
     this.timestamp = timestamp;
     this.oldData = oldData;
+    this.lsn = lsn;
   }
 
   @Override
