@@ -1,10 +1,12 @@
-package org.example.debexeno.component;
+package org.example.debexeno.kafka;
 
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import java.util.Collections;
 import java.util.Properties;
 import java.util.concurrent.ExecutionException;
+import lombok.Getter;
+import lombok.Setter;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.producer.KafkaProducer;
@@ -19,6 +21,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 @Component
+@Getter
+@Setter
 public class KafkaChangeEventProducer {
 
   private static final Logger logger = LoggerFactory.getLogger(KafkaChangeEventProducer.class);
@@ -88,7 +92,7 @@ public class KafkaChangeEventProducer {
    * @param topicName Topic name
    */
 
-  private void createTopicIfNotExists(String topicName) {
+  public void createTopicIfNotExists(String topicName) {
     try {
       boolean topicExists = adminClient.listTopics().names().get().contains(topicName);
       if (!topicExists) {
@@ -113,7 +117,7 @@ public class KafkaChangeEventProducer {
    * @param event ChangeEvent to convert
    * @return JSON string representation
    */
-  private String serializeChangeEvent(ChangeEvent event) {
+  public String serializeChangeEvent(ChangeEvent event) {
     JSONObject json = new JSONObject();
     json.put("id", event.getTxId());
     json.put("type", event.getType().toString());

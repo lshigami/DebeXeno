@@ -9,8 +9,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import org.example.debexeno.component.KafkaChangeEventProducer;
 import org.example.debexeno.config.DatabaseConfig;
+import org.example.debexeno.error.ErrorHandler;
+import org.example.debexeno.kafka.KafkaChangeEventProducer;
 import org.example.debexeno.offset.OffsetManager;
 import org.example.debexeno.reader.ChangeEvent;
 import org.example.debexeno.reader.PostgresChangeLogReader;
@@ -48,6 +49,9 @@ public class CaptureService {
   @Autowired
   private SchemaManager schemaManager;
 
+  @Autowired
+  private ErrorHandler errorHandler;
+
   /**
    * Initialize capturing in a separate thread. Create a new thread to capture changes
    */
@@ -80,6 +84,7 @@ public class CaptureService {
   /**
    * Capture and process changes
    */
+
   public void captureChanges(Set<String> trackedTables) {
 
     // Track only specific tables (empty set means all tables)
@@ -97,7 +102,13 @@ public class CaptureService {
       reader.setLastLsn(lastLsn);
       // Read changes continuously
       while (running.get()) {
-        List<ChangeEvent> changes = reader.readChanges(100);
+        List<ChangeEvent> changes = errorHandler.executeWithRetry(() -> {
+          try {
+            return reader.readChanges(100);
+          } catch (SQLException e) {
+            throw new RuntimeException(e);
+          }
+        }, null, "read_changes");
 
         // Get the current LSN after reading
         String currentLsn = reader.getLastLsn();
