@@ -2,20 +2,23 @@ package org.example.debexeno.service;
 
 import java.sql.SQLException;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.example.debexeno.component.KafkaChangeEventProducer;
 import org.example.debexeno.config.DatabaseConfig;
 import org.example.debexeno.offset.OffsetManager;
 import org.example.debexeno.reader.ChangeEvent;
 import org.example.debexeno.reader.PostgresChangeLogReader;
+import org.example.debexeno.schema.SchemaManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -31,6 +34,7 @@ public class CaptureService {
 
   //Executor service to run the capture in a separate thread
   private ExecutorService executorService;
+  private ScheduledExecutorService scheduledExecutor;
 
   @Autowired
   private KafkaChangeEventProducer kafkaProducer;
@@ -38,13 +42,25 @@ public class CaptureService {
   @Autowired
   private OffsetManager offsetManager;
 
+  @Value("${capture.schema.check.interval.minutes:15}")
+  private int schemaCheckIntervalMinutes;
+
+  @Autowired
+  private SchemaManager schemaManager;
+
   /**
    * Initialize capturing in a separate thread. Create a new thread to capture changes
    */
-  public void startCapture() {
+  public void startCapture(Set<String> trackedTables) {
     if (running.compareAndSet(false, true)) {
+
+      scheduledExecutor = Executors.newScheduledThreadPool(1);
+      // Start a scheduled executor to check for schema changes
+      scheduledExecutor.scheduleAtFixedRate(() -> checkSchemaChanges(trackedTables),
+          schemaCheckIntervalMinutes, schemaCheckIntervalMinutes, TimeUnit.MINUTES);
+
       executorService = Executors.newSingleThreadExecutor();
-      executorService.submit(this::captureChanges);
+      executorService.submit(() -> captureChanges(trackedTables));
       logger.info("Change capture service started");
     } else {
       logger.warn("Change capture service is already running");
@@ -64,11 +80,9 @@ public class CaptureService {
   /**
    * Capture and process changes
    */
-  public void captureChanges() {
+  public void captureChanges(Set<String> trackedTables) {
 
     // Track only specific tables (empty set means all tables)
-    Set<String> trackedTables = new HashSet<>();
-    trackedTables.add("public.test_table");
 
     PostgresChangeLogReader reader = new PostgresChangeLogReader(databaseConfig.getJdbcUrl(),
         databaseConfig.getUsername(), databaseConfig.getPassword(), databaseConfig.getSlotName(),
@@ -150,5 +164,31 @@ public class CaptureService {
           newChanges.size(), lastLsn);
     }
     return newChanges;
+  }
+
+  /**
+   * Periodically checks for schema changes
+   */
+  private void checkSchemaChanges(Set<String> trackedTables) {
+
+    try {
+
+      PostgresChangeLogReader reader = new PostgresChangeLogReader(databaseConfig.getJdbcUrl(),
+          databaseConfig.getUsername(), databaseConfig.getPassword(), databaseConfig.getSlotName(),
+          trackedTables);
+      reader.connect();
+
+      for (String table : trackedTables) {
+        String[] parts = table.split("\\."); // Use "\\" because "." is a special character in regex
+        String schema = parts[0];
+        String tableName = parts[1];
+
+        if (schemaManager.hasSchemaChanged(reader.getConnection(), schema, tableName)) {
+          logger.info("Schema changed for table {}", table);
+        }
+      }
+    } catch (SQLException e) {
+      logger.error("Error checking schema changes", e);
+    }
   }
 }
