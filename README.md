@@ -68,6 +68,39 @@ DebeXeno can be configured through the `application.properties` file. Key config
 - Kafka broker configuration
 - CDC capture settings
 
+### PostgreSQL Configuration for CDC  
+
+DebeXeno utilizes PostgreSQL's **logical replication** to capture database changes in real-time. To enable this, you need to configure your PostgreSQL instance with the following settings:  
+
+#### 1. Enable Logical Replication  
+Edit your `postgresql.conf` file to set `wal_level` to `logical`:  
+```properties
+wal_level = logical
+max_replication_slots = 10
+max_wal_senders = 10
+```
+Restart PostgreSQL after applying the changes:  
+```bash
+sudo systemctl restart postgresql
+```
+**Purpose:**  
+This enables logical decoding, allowing PostgreSQL to track and stream changes to external consumers like DebeXeno.  
+
+#### 2. Create a Replication Slot  
+Connect to PostgreSQL and create a **replication slot** using the `wal2json` logical decoding plugin:  
+```sql
+SELECT * FROM pg_create_logical_replication_slot('debeXeno_slot', 'wal2json');
+```
+**Purpose:**  
+A replication slot retains WAL logs for CDC tools to consume without losing data. `wal2json` converts changes into JSON format for easy processing.  
+
+#### 3. Set REPLICA IDENTITY FULL  
+To ensure **UPDATE** and **DELETE** operations contain full row data, set `REPLICA IDENTITY` for the required tables:  
+```sql
+ALTER TABLE your_table REPLICA IDENTITY FULL;
+```
+**Purpose:**  
+By default, PostgreSQL only logs the primary key when rows are updated or deleted. `REPLICA IDENTITY FULL` ensures the entire row data is available in change events.  
 
 ## Architecture
 
