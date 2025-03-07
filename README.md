@@ -31,35 +31,6 @@ DebeXeno is a robust Change Data Capture (CDC) solution inspired by Debezium, de
 
 ## Getting Started
 
-### Installation
-
-1. Clone the repository:
-```bash
-git clone https://github.com/yourusername/DebeXeno.git
-cd DebeXeno
-```
-
-2. Build the project:
-```bash
-mvn clean install
-```
-
-3. Configure your application.properties:
-```properties
-# PostgreSQL Configuration
-spring.datasource.url=jdbc:postgresql://localhost:5432/your_database
-spring.datasource.username=your_username
-spring.datasource.password=your_password
-
-# Kafka Configuration
-kafka.bootstrap.servers=localhost:9092
-```
-
-4. Run the application:
-```bash
-mvn spring-boot:run
-```
-
 ## Configuration
 
 DebeXeno can be configured through the `application.properties` file. Key configuration options include:
@@ -102,10 +73,88 @@ ALTER TABLE your_table REPLICA IDENTITY FULL;
 **Purpose:**  
 By default, PostgreSQL only logs the primary key when rows are updated or deleted. `REPLICA IDENTITY FULL` ensures the entire row data is available in change events.  
 
+### Installation
+
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/DebeXeno.git
+cd DebeXeno
+```
+
+2. Build the project:
+```bash
+mvn clean install
+```
+
+3. Configure your application.properties:
+```properties
+# PostgreSQL Configuration
+spring.datasource.url=jdbc:postgresql://localhost:5432/your_database
+spring.datasource.username=your_username
+spring.datasource.password=your_password
+
+# Kafka Configuration
+kafka.bootstrap.servers=localhost:9092
+```
+
+4. Run the application:
+```bash
+mvn spring-boot:run
+```
+
 ## Architecture
 
 DebeXeno follows a modular architecture:
 
-1. **Capture Service**: Monitors PostgreSQL changes using logical replication
-2. **Event Processing**: Transforms database changes into standardized events
-3. **Kafka Producer**: Streams events to configured Kafka topics
+### Components
+
+- **PostgreSQL Database**: Source of data changes with logical replication enabled
+- **DebeXeno Core**: 
+  - **PostgresChangeLogReader**: Connects to PostgreSQL's logical replication slot and reads change events
+  - **CaptureService**: Orchestrates the CDC process and manages application lifecycle
+  - **KafkaChangeEventProducer**: Transforms and publishes change events to Kafka
+- **Apache ZooKeeper**: Provides distributed coordination for leader election
+- **Apache Kafka**: Destination for change events
+### Workflow
+
+1. **Database Changes**: When data is inserted, updated, or deleted in PostgreSQL, changes are written to the Write-Ahead Log (WAL)
+
+2. **Logical Decoding**: PostgreSQL's logical decoding feature (with `wal_level = logical`) converts WAL records into a format that can be interpreted by the `wal2json` plugin
+
+3. **Change Capture**: 
+   - DebeXeno connects to PostgreSQL's replication slot
+   - Reads change events as JSON
+   - Tracks reading position using Log Sequence Number (LSN)
+   - Filters events based on configured tracked tables
+
+4. **Event Processing**:
+   - Parses JSON data from `wal2json`
+   - Creates structured `ChangeEvent` objects containing:
+     - Operation type (INSERT, UPDATE, DELETE)
+     - Schema and table name
+     - New column values
+     - Old column values (for UPDATE/DELETE when REPLICA IDENTITY FULL is set)
+     - Transaction ID and LSN
+     - Timestamp
+
+5. **Event Publishing**:
+   - Converts events to JSON format
+   - Determines appropriate Kafka topic based on schema and table name
+   - Publishes events to Kafka with record ID as the key (when available)
+   - Ensures idempotent delivery
+
+### Distributed Coordination
+
+DebeXeno uses Apache Curator with ZooKeeper for distributed coordination:
+
+- **Leader Election**: Only one DebeXeno instance actively captures changes when running multiple instances
+- **Failover**: If the leader instance fails, another instance automatically takes over
+- **LSN Tracking**: The leader position (LSN) is persisted to ensure no events are missed during failover
+- **Lock Management**: Prevents multiple instances from simultaneously reading from the same replication slot
+
+### Technical Features
+
+- **Selective Tracking**: Only monitors configured tables
+- **Lossless Processing**: Uses replication slots and LSN tracking to ensure no events are missed or duplicated
+- **Horizontal Scalability**: Designed for high availability with multiple instances
+- **Transactional Integrity**: Preserves transaction boundaries from the source database
