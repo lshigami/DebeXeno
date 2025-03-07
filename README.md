@@ -29,7 +29,6 @@ DebeXeno is a robust Change Data Capture (CDC) solution inspired by Debezium, de
 - **Apache Kafka** (v3.4.0) - Event streaming platform
 - **Apache Curator** (v5.6.0) - ZooKeeper client framework
 
-## Getting Started
 
 ## Configuration
 
