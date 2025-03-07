@@ -6,6 +6,7 @@
 DebeXeno is a robust Change Data Capture (CDC) solution inspired by Debezium, designed to capture and stream changes from PostgreSQL databases to Apache Kafka in real-time. It enables event-driven architectures and real-time data integration by converting database changes into event streams.
 ![Uploading image.png…]()
 
+
 ## Features
 - **PostgreSQL CDC**: Capture INSERT, UPDATE, and DELETE operations from PostgreSQL databases
 - **Real-time Kafka Streaming**: Stream captured changes to Kafka topics with minimal latency
