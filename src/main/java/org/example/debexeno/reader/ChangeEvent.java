@@ -26,7 +26,8 @@ public class ChangeEvent {
    * Set  REPLICA IDENTITY FULL on the table to get old values
    */ Optional<Map<String, Object>> oldData; // old column values when type is UPDATE or DELETE
 
-  ChangeEvent(String txId, Type type, String schema, String table, Map<String, Object> columnValues,
+  public ChangeEvent(String txId, Type type, String schema, String table,
+      Map<String, Object> columnValues,
       Instant timestamp, Optional<Map<String, Object>> oldData, String lsn) {
     this.txId = txId;
     this.type = type;

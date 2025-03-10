@@ -118,6 +118,7 @@ public class SchemaManager {
     boolean changed = !cachedSchema.equals(currentSchema);
     if (changed) {
       logger.info("Schema changed for {}.{}", schemaName, tableName);
+      logger.info("Current schema: {}", currentSchema);
       schemaCache.put(tableKey, currentSchema);
       handleSchemaChange(cachedSchema, currentSchema);
     }

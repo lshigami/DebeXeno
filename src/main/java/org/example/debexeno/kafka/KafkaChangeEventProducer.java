@@ -82,7 +82,7 @@ public class KafkaChangeEventProducer {
    * @param table  Table name
    * @return Topic name
    */
-  private String getTopicName(String schema, String table) {
+  public String getTopicName(String schema, String table) {
     return String.format("%s.%s.%s", kafkaConfig.getTopicPrefix(), schema, table);
   }
 
